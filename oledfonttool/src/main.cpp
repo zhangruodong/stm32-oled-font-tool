@@ -22,6 +22,7 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QSet>
+#include <QSizePolicy>
 #include <QSlider>
 #include <QSplitter>
 #include <QStandardPaths>
@@ -42,9 +43,9 @@
 /*
  * OLED 汉字取模工具
  *
- * 关键约束：生成的字模必须和 MyFreeRTOS_C8T6/Hardware/OLED.c 里的
+ * 关键约束：生成的字模必须和工程里 Hardware/OLED.c 的
  * OLED_ShowChinese() 对得上（列行式 / 逆向 / 低位在前 / 每字 32 字节）。
- * 编码逻辑在 fontgen.cpp，那份算法和 tools/gen_oled_hz.py 是等价的，
+ * 编码逻辑在 fontgen.cpp，那份算法和 gen_oled_hz.py 是等价的，
  * 改任何一边都要同步改另一边，否则字会花屏。
  */
 
@@ -148,6 +149,7 @@ private:
 	QLabel *m_countLabel;
 	QLabel *m_hint;
 	QLabel *m_pathLabel;
+	QCheckBox *m_askEveryTime;      /* 勾上则每次导出都弹对话框选位置 */
 	QString m_headerPath;
 };
 
@@ -165,7 +167,10 @@ void MainWindow::buildUi()
 
 	QWidget *side = new QWidget(this);
 	side->setObjectName(QStringLiteral("SidePanel"));
-	side->setFixedWidth(300);
+	/* 不要用 setFixedWidth：固定宽度会让分隔线拖不动。
+	 * 给个最小宽度让内容不挤，剩下的交给 QSplitter —— 用户可以自由拖动。 */
+	side->setMinimumWidth(280);
+	side->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
 	QVBoxLayout *sideLayout = new QVBoxLayout(side);
 	sideLayout->setContentsMargins(16, 16, 16, 12);
@@ -265,6 +270,12 @@ void MainWindow::buildUi()
 	m_pathLabel->setWordWrap(true);
 	outLayout->addWidget(m_pathLabel);
 
+	/* 默认不勾：正常情况下一键导出，不打扰。
+	 * 勾上后每次导出都弹对话框，方便导出到别处。 */
+	m_askEveryTime = new QCheckBox(QStringLiteral("每次导出都询问保存位置"), boxOut);
+	m_askEveryTime->setChecked(false);
+	outLayout->addWidget(m_askEveryTime);
+
 	QPushButton *exportBtn = new QPushButton(QStringLiteral("导出 OLED_CFont.h"), boxOut);
 	exportBtn->setObjectName(QStringLiteral("Primary"));
 	QPushButton *importBtn = new QPushButton(QStringLiteral("导入已有字库"), boxOut);
@@ -281,6 +292,10 @@ void MainWindow::buildUi()
 
 	m_status = new QLabel(side);
 	m_status->setObjectName(QStringLiteral("Hint"));
+	/* 必须开换行：状态文字比较长（例如"已导入 17 个汉字并与原文合并（原有 17 个，现共 17 个）"），
+	 * 不开的话超出面板宽度的部分会被直接切掉，看起来像显示不全。 */
+	m_status->setWordWrap(true);
+	m_status->setMinimumWidth(1);      /* 允许被压缩，配合上面的换行才不会撑开面板 */
 	sideLayout->addWidget(m_status);
 
 	/* ---- 右侧预览：套一层滚动区域，字多了 / 窗口缩小了都能滚 ---- */
@@ -304,7 +319,16 @@ void MainWindow::buildUi()
 	setCentralWidget(splitter);
 
 	m_headerPath = defaultHeaderPath();
-	m_pathLabel->setText(QStringLiteral("默认导出到：\n%1").arg(m_headerPath));
+	if (m_headerPath.isEmpty())
+	{
+		m_pathLabel->setText(QStringLiteral(
+			"未自动找到 Keil 工程目录。\n"
+			"导出时会先弹出对话框让你选保存位置。"));
+	}
+	else
+	{
+		m_pathLabel->setText(QStringLiteral("默认导出到：\n%1").arg(m_headerPath));
+	}
 
 	connect(m_text, &QPlainTextEdit::textChanged, this, &MainWindow::refreshPreview);
 	connect(m_fontBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -335,7 +359,7 @@ void MainWindow::buildUi()
  * 所以这里按优先级依次尝试，都不写死某个人的机器路径：
  *   1. 从 exe 所在目录开始向上找，看哪一层下面有 MyFreeRTOS_C8T6\Hardware
  *   2. 环境变量 OLED_FONT_PROJECT 指定的工程根目录（可选，方便把工具放别处）
- *   3. 都没有 → 返回“文档”目录，让用户在导出对话框里自己选
+ *   3. 都找不到 → 返回空字符串，导出时弹对话框让用户自己选
  *
  * 找不到是正常情况：导入/导出都有文件对话框，用户可以手动选任意路径。
  */
@@ -371,9 +395,10 @@ QString MainWindow::defaultHeaderPath() const
 		}
 	}
 
-	/* 3) 找不到就用“文档”目录兜底，用户在对话框里自己选位置。 */
-	return QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation))
-		.absoluteFilePath(QStringLiteral("OLED_CFont.h"));
+	/* 3) 找不到就返回空字符串 —— 表示"猜不准"。
+	 *    调用方（构造函数和导出）会据此弹对话框让用户自己选，
+	 *    而不是默默写到某个用户不知道的地方。 */
+	return QString();
 }
 
 void MainWindow::refreshPreview()
@@ -530,6 +555,34 @@ void MainWindow::exportHeader()
 		}
 	}
 
+	/* 什么时候先问用户保存位置：
+	 *   1. 用户勾了"每次导出都询问"
+	 *   2. 没自动找到工程目录（猜不准，绝不能默默写到别处）
+	 * 否则直接写到自动推断出来的路径，保持一键导出的便利。 */
+	const bool needAsk = m_askEveryTime->isChecked() || m_headerPath.isEmpty();
+	if (needAsk)
+	{
+		QString start = m_headerPath;
+		if (start.isEmpty())
+		{
+			/* 用"文档"目录当对话框的起始位置，比空路径友好 */
+			start = QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation))
+				.absoluteFilePath(QStringLiteral("OLED_CFont.h"));
+		}
+		const QString picked = QFileDialog::getSaveFileName(
+			this,
+			m_headerPath.isEmpty() ? QStringLiteral("导出到（未自动找到工程目录，请选择位置）")
+			                       : QStringLiteral("导出到"),
+			start,
+			QStringLiteral("C 头文件 (*.h)"));
+		if (picked.isEmpty())
+		{
+			return;     /* 用户取消了 */
+		}
+		m_headerPath = picked;
+		m_pathLabel->setText(QStringLiteral("导出到：\n%1").arg(m_headerPath));
+	}
+
 	QFile file(m_headerPath);
 	if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
 	{
@@ -586,7 +639,7 @@ void MainWindow::exportHeader()
 			QMessageBox::information(this, QStringLiteral("导出成功（需要手动搬运）"),
 				QStringLiteral("程序没有权限直接写入工程目录，已改为导出到：\n%1\n\n"
 				               "下一步：双击\n%2\n"
-				               "把字库搬进 MyFreeRTOS_C8T6\\Hardware\\（会自动备份旧文件）。\n\n"
+				               "把字库搬进工程的 Hardware 目录（会自动备份旧文件）。\n\n"
 				               "汉字 %3 个，%4 字节。")
 				.arg(savedTo)
 				.arg(installer)
@@ -807,9 +860,8 @@ void MainWindow::importHeader()
 		                   "如果这不是你要的，请先撤销（Ctrl+Z）。").arg(after).arg(before));
 	}
 
-	m_status->setText(QStringLiteral("已导入 %1 个汉字并与原文合并（原有 %2 个，现共 %3 个）")
+	m_status->setText(QStringLiteral("已导入 %1 字，合并后共 %2 字")
 	                  .arg(added)
-	                  .arg(before)
 	                  .arg(after));
 }
 

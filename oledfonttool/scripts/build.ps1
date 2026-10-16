@@ -41,6 +41,19 @@ if ($__me -and (Test-Path -LiteralPath $__me)) {
 
 $ErrorActionPreference = 'Stop'
 
+# 控制台切到 UTF-8。
+# 默认情况下 PowerShell 按系统 ANSI 代码页（中文系统是 GBK，代码页 936）输出，
+# 而工程路径里的某些汉字（例如"课" U+8BFE）在 GBK 里编码不了，
+# 会被替换成 '?'，后面的字节就跟着错位，打印出来变成
+# "G:/stm32璇惧爞瀹為獙" 这种乱码。切到 65001 就不会了。
+try {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    & chcp.com 65001 > $null 2>&1
+} catch {
+    # 改不了就算了，不能让构建因为编码问题失败
+}
+
 # 目录约定：
 #   本脚本在 oledfonttool\scripts\
 #   源码在   oledfonttool\src\      （含 CMakeLists.txt）
@@ -50,11 +63,93 @@ $src    = Join-Path $root 'src'
 $build  = Join-Path $root 'build'
 $log    = Join-Path $root 'build-log.txt'
 
-# ---- 路径配置：和你机器上不一致就改这里 ----
-$vcvars = 'D:\Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'
-$qt     = 'D:\Qt\6.11.2\msvc2022_64'
-$cmake  = 'D:\Qt\Tools\CMake_64\bin\cmake.exe'
-$ninja  = 'D:\Qt\Tools\Ninja\ninja.exe'
+# ---- 工具链路径：先自动探测，再回退到本机默认值 ----
+#
+# 这几条不能只写死某个人的安装路径，否则别人 clone 下来（Qt 装在 C:\Qt 等）
+# 就直接失败。探测顺序：
+#   1. 环境变量（Qt 安装器有时会设 QTDIR / QTDIR6，用户自己也能设）
+#   2. 常见安装位置逐个找
+#   3. 都找不到 → 用下面 $Fallback* 里写的本机路径，并给出明确提示
+#
+# 找不到时会在 [1/6] 环境自检里报错，并告诉用户改哪几个变量。
+
+function Find-First($candidates, $relative) {
+    foreach ($base in $candidates) {
+        if (-not $base) { continue }
+        $p = Join-Path $base $relative
+        if (Test-Path $p) { return (Resolve-Path $p).Path }
+    }
+    return $null
+}
+
+function Get-QtRoots {
+    $roots = @()
+    if ($env:QTDIR6) { $roots += $env:QTDIR6 }
+    if ($env:QTDIR)  { $roots += $env:QTDIR }
+    # 常见安装位置 + 其中各个 Qt 版本目录
+    foreach ($base in @('C:\Qt', 'D:\Qt', 'E:\Qt', 'C:\Qt6', 'D:\Qt6')) {
+        if (-not (Test-Path $base)) { continue }
+        $roots += (Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Name -match '^\d+\.\d+' } |
+                   Sort-Object Name -Descending |
+                   ForEach-Object { Join-Path $_.FullName 'msvc2022_64' })
+    }
+    return $roots
+}
+
+function Get-VsRoots {
+    $roots = @()
+    # 用 vswhere 问 Visual Studio 装在哪（最可靠）
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $vswhere) {
+        $found = & $vswhere -latest -products * -property installationPath 2>$null
+        if ($found) { $roots += $found }
+    }
+    foreach ($base in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
+        if (-not (Test-Path $base)) { continue }
+        $roots += (Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
+                   ForEach-Object {
+                       Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue |
+                       ForEach-Object { $_.FullName }
+                   })
+    }
+    return $roots
+}
+
+# 本机默认值：探测不到时兜底用
+$FallbackVcvars = 'D:\Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'
+$FallbackQt     = 'D:\Qt\6.11.2\msvc2022_64'
+$FallbackCmake  = 'D:\Qt\Tools\CMake_64\bin\cmake.exe'
+$FallbackNinja  = 'D:\Qt\Tools\Ninja\ninja.exe'
+
+$vcvars = Find-First (Get-VsRoots) 'VC\Auxiliary\Build\vcvars64.bat'
+if (-not $vcvars) { $vcvars = $FallbackVcvars }
+
+$qt = $null
+foreach ($cand in Get-QtRoots) {
+    if (Test-Path (Join-Path $cand 'lib\cmake\Qt6')) { $qt = $cand; break }
+}
+if (-not $qt) { $qt = $FallbackQt }
+
+# CMake / Ninja 优先找 PATH，其次找 Qt Tools 目录
+$cmake = $null
+foreach ($cand in @((Get-Command cmake.exe -ErrorAction SilentlyContinue).Source,
+                    (Find-First @('D:\Qt\Tools\CMake_64', 'C:\Qt\Tools\CMake_64',
+                                  'D:\Qt\Tools\CMake', 'C:\Qt\Tools\CMake') 'bin\cmake.exe'))) {
+    if ($cand -and (Test-Path $cand)) { $cmake = $cand; break }
+}
+if (-not $cmake) { $cmake = $FallbackCmake }
+
+$ninja = $null
+foreach ($cand in @((Get-Command ninja.exe -ErrorAction SilentlyContinue).Source,
+                    (Find-First @('D:\Qt\Tools\Ninja', 'C:\Qt\Tools\Ninja') 'ninja.exe'))) {
+    if ($cand -and (Test-Path $cand)) { $ninja = $cand; break }
+}
+if (-not $ninja) { $ninja = $FallbackNinja }
+
+# 注意：探测结果不能在这里打印 —— Say() 是在下面才定义的函数，
+# PowerShell 顺序执行，在这里调用会报 "Say 不是 cmdlet" 并导致脚本直接退出
+# （表现就是窗口一闪而过）。打印放到函数定义之后的"开始"那一段。
 
 function Say($msg) {
     Write-Host $msg
@@ -107,6 +202,12 @@ Say " 构建类型: $Config"
 Say " 源码目录: $src"
 Say " 构建目录: $build"
 Say " 日志文件: $log"
+Say ''
+Say ' 工具链探测结果:'
+Say "   vcvars : $vcvars"
+Say "   Qt     : $qt"
+Say "   cmake  : $cmake"
+Say "   ninja  : $ninja"
 Say ''
 
 # ---- [1/5] 环境自检 ----
@@ -169,20 +270,77 @@ $exe = Join-Path $build 'oledfonttool.exe'
 # 这里绝对不能写死 --release：Debug 构建配 Release 的 DLL 会直接报
 # "找不到 Qt6Widgetsd.dll" 起不来。
 #
-# 部署前先把旧的 Qt DLL 清掉，避免 Debug/Release 两套混在一起。
-Get-ChildItem $build -File -Filter 'Qt6*.dll' -ErrorAction SilentlyContinue |
+# 部署前必须把上一次的运行时彻底清掉，否则 Debug/Release 两套会混在一起。
+# 注意：只删 build\ 根目录下的 *.dll 是不够的 —— windeployqt 还会往
+# platforms\ imageformats\ tls\ 这些子目录放插件，上一次构建留下的
+# qwindowsd.dll（调试版）就是这么混进发布包的。所以这里整目录清。
+Get-ChildItem $build -Filter 'Qt6*.dll' -Recurse -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
-Get-ChildItem $build -File -Filter 'd3dcompiler_47.dll' -ErrorAction SilentlyContinue |
-    Remove-Item -Force -ErrorAction SilentlyContinue
+foreach ($sub in @('platforms', 'imageformats', 'iconengines', 'styles',
+                   'tls', 'networkinformation', 'generic')) {
+    $p = Join-Path $build $sub
+    if (Test-Path $p) {
+        Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
-RunLogged (Join-Path $qt 'bin\windeployqt.exe') @('--no-translations', $exe)
+# --compiler-runtime 让 windeployqt 把微软 VC 运行库（msvcp140.dll、
+# vcruntime140.dll 等）也一起拷过来。
+#
+# 为什么必须加：不加的话，程序在"没装过 Visual C++ 运行库"的电脑上会报
+# "找不到 msvcp140.dll"直接起不来。windeployqt 默认是不拷这些的。
+RunLogged (Join-Path $qt 'bin\windeployqt.exe') @('--no-translations', '--compiler-runtime', $exe)
 
-# 检查真正的那个 DLL 在不在——少了它程序会报"找不到 Qt6Widgetsd.dll"
-$widgetsDll = Get-ChildItem $build -Filter 'Qt6Widgets*.dll' -ErrorAction SilentlyContinue
+# 检查真正的那个 DLL 在不在——少了它程序起不来
+$widgetsDll = Get-ChildItem $build -File -Filter 'Qt6Widgets.dll' -ErrorAction SilentlyContinue
 if (-not $widgetsDll) {
-    Die "windeployqt 没有拷来 Qt6Widgets 运行库，$exe 运行时会报错。请把上面 windeployqt 的输出发给我。"
+    Die "windeployqt 没有拷来 Qt6Widgets.dll，$exe 运行时会报错。请把上面 windeployqt 的输出发给我。"
 }
 Say "      OK  已部署 $($widgetsDll.Name)"
+
+# 兜底：确认 VC 运行库真的进来了。有些 windeployqt 版本对 --compiler-runtime
+# 处理不一样，所以这里自己再检查一次，缺了就直接从 VS 的 Redist 目录补。
+# 注意要用 Redist 目录里的版本（允许随程序分发），不要用 System32 里的。
+$crtNeeded = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
+$crtMissing = @($crtNeeded | Where-Object { -not (Test-Path (Join-Path $build $_)) })
+if ($crtMissing.Count -gt 0) {
+    Say "      VC 运行库缺少 $($crtMissing.Count) 个，从 VS Redist 目录补齐..."
+    # 找 VS 根目录。手工数层数很容易错
+    # （cl.exe 在 <VS根>\VC\Tools\MSVC\<版本>\bin\Hostx64\x64\ 下，要往上 6 层），
+    # 所以用循环逐级上溯，遇到含 VC\Redist\MSVC 的那一层就停。
+    $crtSrc = $null
+    $probe = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
+    if ($probe) {
+        $probe = Split-Path $probe -Parent        # 去掉文件名，从所在目录开始
+        for ($i = 0; $i -lt 8 -and $probe; $i++) {
+            $redist = Join-Path $probe 'VC\Redist\MSVC'
+            if (Test-Path $redist) {
+                $crtSrc = Get-ChildItem $redist -Recurse -Directory -Filter 'Microsoft.VC*.CRT' `
+                            -ErrorAction SilentlyContinue |
+                          Where-Object { $_.FullName -match '\\x64\\' -and $_.FullName -notmatch 'onecore' } |
+                          Select-Object -First 1
+                if ($crtSrc) { break }
+            }
+            $parent = Split-Path $probe -Parent
+            if ($parent -eq $probe) { break }      # 到盘根了，停
+            $probe = $parent
+        }
+    }
+    if ($crtSrc) {
+        foreach ($n in $crtMissing) {
+            $src = Join-Path $crtSrc.FullName $n
+            if (Test-Path $src) {
+                Copy-Item $src $build -Force
+                Say "        补上 $n"
+            } else {
+                Say "        找不到 $n（在 $($crtSrc.FullName)）"
+            }
+        }
+    } else {
+        Say "        没找到 VS Redist 目录，无法自动补齐。"
+        Say "        请手动安装 VC++ 2015-2022 运行库，或者把 msvcp140.dll 等拷进 package\。"
+    }
+}
 
 # ---- [6/6] 打包成可分发文件夹 ----
 # 目的：产出一个"拷到任何 Windows 机器都能双击运行"的干净目录，
@@ -196,13 +354,84 @@ New-Item -ItemType Directory -Path $pkg -Force | Out-Null
 
 Copy-Item $exe $pkg -Force
 
-# Qt 运行库 + 平台插件（平台插件少了程序起不来）
-Get-ChildItem $build -File -Filter '*.dll' |
-    Where-Object { $_.Name -notlike 'oledfonttool*' } |
-    Copy-Item -Destination $pkg -Force
-if (Test-Path (Join-Path $build 'platforms')) {
-    Copy-Item (Join-Path $build 'platforms') $pkg -Recurse -Force
+# 会不会有调试版混进来，用【明确的黑名单】判断，不能用 "以 d 结尾" 这种模式。
+# 反例：qcertonlybackend.dll / qschannelbackend.dll 是正常的发布版插件
+#       （结尾的 d 属于 backend 这个词），按模式匹配会被误删。
+#
+# 真调试版的特征：
+#   Qt6Cored.dll             Qt 的调试库
+#   qwindowsd.dll            平台插件的调试版
+#   msvcp140d.dll            微软 C 运行库调试版（不可再分发，必须剔除）
+#   msvcp140_2d.dll          同上，注意版本和 d 之间还夹着 _1 / _2
+#   vcruntime140_1d.dll      同上
+#   vcruntime140_threadsd.dll 同上
+#   vccorlib140d.dll         C++/CX 运行库调试版
+function Test-DebugRuntime($name) {
+    # Qt 调试库：Qt6<模块>d.dll
+    if ($name -match '^Qt6[A-Za-z]+d\.dll$') { return $true }
+    # 平台/图片格式插件的调试版
+    if ($name -match '^q(windows|svgicon|jpeg|gif|ico|modernwindowsstyle|offscreen|minimal|direct2d)d\.dll$') { return $true }
+    # 微软运行库的调试版。
+    # 不要试图穷举文件名 —— 这些名字的形态很多：
+    #   msvcp140d.dll              以 d.dll 结尾
+    #   msvcp140_1d.dll            同上（_1 在 d 前面）
+    #   vcruntime140_threadsd.dll  同上（_threads 在 d 前面）
+    #   msvcp140d_atomic_wait.dll  d 后面还有模块名 —— 这种以 d_ 为特征
+    #   msvcp140d_codecvt_ids.dll  同上
+    #   vccorlib140d.dll / concrt140d.dll
+    #
+    # 只需要两条规则就能全覆盖：
+    #   a) 以 "d.dll" 结尾
+    #   b) 名字里含 "d_"（调试标记后面跟着模块名）
+    if ($name -match '^(msvcp|vcruntime|vccorlib|concrt|ucrtbased)') {
+        if ($name.EndsWith('d.dll') -or $name.Contains('d_')) {
+            return $true
+        }
+    }
+    return $false
 }
+
+# Qt 运行库。跳过调试版（双保险：上面已经清理过，这里再挡一道）
+$skipped = @()
+Get-ChildItem $build -File -Filter '*.dll' | ForEach-Object {
+    if ($_.Name -like 'oledfonttool*') { return }
+    if (Test-DebugRuntime $_.Name) { $skipped += $_.Name; return }
+    Copy-Item $_.FullName -Destination $pkg -Force
+}
+
+# 插件子目录（platforms 少了程序起不来）
+foreach ($sub in @('platforms', 'imageformats', 'iconengines', 'styles',
+                   'tls', 'networkinformation', 'generic')) {
+    $sp = Join-Path $build $sub
+    if (-not (Test-Path $sp)) { continue }
+    $dp = Join-Path $pkg $sub
+    New-Item -ItemType Directory -Path $dp -Force | Out-Null
+    Get-ChildItem $sp -File -Filter '*.dll' | ForEach-Object {
+        if (Test-DebugRuntime $_.Name) { $skipped += $_.Name; return }
+        Copy-Item $_.FullName -Destination $dp -Force
+    }
+    if (-not (Get-ChildItem $dp -File -ErrorAction SilentlyContinue)) {
+        Remove-Item $dp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if ($skipped.Count -gt 0) {
+    Say ("      已剔除调试版文件 {0} 个: {1}" -f $skipped.Count, ($skipped -join ', '))
+}
+
+# 这个 exe 只用到 Core/Gui/Widgets/Svg，连网络都不用，所以 Qt6Network
+# 和它的 TLS 后端插件（qcertonlybackend / qschannelbackend / qnetworklistmanager）
+# 在发布包里是多余的，整块去掉。
+foreach ($extra in @(
+    'Qt6Network.dll',
+    'networkinformation\qnetworklistmanager.dll',
+    'tls\qcertonlybackend.dll',
+    'tls\qschannelbackend.dll')) {
+    $p = Join-Path $pkg $extra
+    if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+}
+Remove-Item (Join-Path $pkg 'tls') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $pkg 'networkinformation') -Recurse -Force -ErrorAction SilentlyContinue
 
 # 附一份使用说明，别人拿到就能用
 $readme = @"
@@ -220,7 +449,7 @@ OLED 汉字取模工具  ($Config 版)
 
 注意
 ----
-本工具是配合 MyFreeRTOS_C8T6 工程用的，字库格式固定为：
+字库格式固定为：
     阴码 / 列行式 / 逆向(低位在前)
     每行 = 3 字节 UTF-8 编码 + 32 字节点阵 = 35 字节
 

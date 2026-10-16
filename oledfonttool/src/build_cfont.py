@@ -1,9 +1,9 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """生成 OLED_CFont.h —— 汉字 16x16 字模表
 
 改字方法：把 CHARS 改成你要显示的文字，重新运行本脚本。
-输出到 tools/OLED_CFont.h，复制到 MyFreeRTOS_C8T6/Hardware/ 覆盖同名文件即可。
-（也可以直接改 OUT 指向工程目录，但那个目录可能没有写权限。）
+输出到本脚本所在目录（oledfonttool\\src\\OLED_CFont.h），
+再双击同目录的 install-cfont.cmd 搬进工程的 Hardware 目录即可。
 """
 import os
 import sys
@@ -74,7 +74,7 @@ def main():
     print("\n写出 %s" % path)
     print("汉字 %d 个, 每行 35 字节, 共 %d 字节 (%d KB)"
           % (len(rows), len(rows) * 35, (len(rows) * 35 + 512) // 1024))
-    print("复制到 MyFreeRTOS_C8T6/Hardware/ 覆盖同名文件, 然后 Keil 里 Rebuild")
+    print("接下来: 双击 install-cfont.cmd 搬进工程, 然后在 Keil 里 Rebuild")
 
 
 if __name__ == "__main__":

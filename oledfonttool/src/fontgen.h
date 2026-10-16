@@ -10,7 +10,7 @@
 /*
  * 把汉字渲染成 16x16 点阵，并编码成 OLED 驱动要的字节格式。
  *
- * 编码格式（和 tools/gen_oled_hz.py、MyFreeRTOS_C8T6/Hardware/OLED_CFont.h 完全一致）：
+ * 编码格式（和同目录的 gen_oled_hz.py、生成的 OLED_CFont.h 完全一致）：
  *   阴码 / 列行式 / 逆向(低位在前)
  *   一个汉字 = 上半屏 16 字节 + 下半屏 16 字节 = 32 字节
  *

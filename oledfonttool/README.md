@@ -1,22 +1,24 @@
 # OLED 汉字取模工具
 
-给 `MyFreeRTOS_C8T6` 这个 STM32 工程配套的汉字取模工具。**输入文字 → 实时看点阵 → 导出
-`OLED_CFont.h`**,替代 PCtoLCD2002 一个字一个字点、再复制 32 个十六进制数的做法。
+给 STM32 + SSD1306 工程配套的汉字取模工具。**输入文字 → 实时看点阵 → 导出
+`OLED_CFont.h`**，一个字一个字地手攒字模这件事就不必再做了。
 
 有两种用法，产出格式完全一致，随便挑：
 
 - **图形界面版**（Qt，双击 `BUILD.lnk` 构建）——适合加几个字、想边看边调字形
 - **命令行版**（`src\build_cfont.py`）——适合一次加几十个字，或写进脚本
 
-## 为什么要有它
+## 它解决什么
 
-PCtoLCD2002 能用，但有两个坑：
+取模最容易出的两个问题，这个工具都从源头消掉了：
 
-1. **取模方式选错就花屏**。你的驱动是**列行式**，软件默认/容易点成**逐行式**，
-   导出的字模贴进去就是一片散点（`文字取模软件(赠送)\123.C` 就是这么来的）。
-2. **手抄 32 个数字容易错**。漏一个字节肉眼看不出来，上机才发现花屏。
+1. **取模参数选错**。字模有"列行式 / 逐行式 / 顺向 / 逆向"多种排列，
+   和驱动的读取方式不匹配就会显示成一片散点。本工具**格式写死在代码里**，
+   不需要你选任何参数。
+2. **手抄 32 个十六进制数**。漏一个字节肉眼根本看不出来，上机才发现不对。
+   本工具自动生成，并且**导出前逐行校验**（每行必须正好 35 字节）。
 
-这个工具把这两件事都消掉了：格式写死在代码里，点阵实时可看，导出即用。
+再加上点阵实时可看、Flash 占用实时可见、已有字库可导入合并。
 
 ## 目录结构
 
@@ -27,6 +29,7 @@ oledfonttool\
   build\                 <- 构建产物：oledfonttool.exe + Qt 运行库
   scripts\               <- 构建用的脚本（一般不用碰）
     build.ps1              真正的构建逻辑
+    build.cmd              可移植的构建入口（推荐）
     make-shortcut.ps1      重建 BUILD.lnk
     add_bom.py             给文件补 UTF-8 BOM
   src\                   <- 所有源码
@@ -37,7 +40,7 @@ oledfonttool\
     build_cfont.py         【命令行主入口】改这里加字
     gen_oled_hz.py         渲染/编码底层
     verify_cfont.py        校验字库是否逐字节一致
-    dump_font.py           验证外来字模
+    dump_font.py           把字节还原成点阵图
     install-cfont.cmd      把字库搬进工程（带备份）
     OLED_CFont.h           命令行版的产物
     pctest\                PC 上跑 OLED 驱动的测试台
@@ -102,15 +105,16 @@ python oledfonttool\src\verify_cfont.py     # 校验是否逐字节一致
 
 产出 `src\OLED_CFont.h`，再双击 `src\install-cfont.cmd` 搬运。
 
-### 验证外来字模
+### 验证手里的字节
 
-从 PCtoLCD2002 手取了字模、或从网上抄来一段字节，喂给它就能看到点阵图：
+手上有一段来源不明的 32 字节字模，喂给它就能看到点阵图：
 
 ```powershell
 python oledfonttool\src\dump_font.py 0x00,0x40,0xFE,...
 ```
 
 它会**同时按"列行式"和"逐行式"两种解释**画出图，并报孤立点数——散点少的那个才是对的。
+不用编译烧录就能判断一段字节是不是本工具要求的格式。
 
 ## 编码格式（唯一权威定义）
 
@@ -120,7 +124,7 @@ python oledfonttool\src\dump_font.py 0x00,0x40,0xFE,...
 字库每行 = 3 字节 UTF-8 编码 + 32 字节点阵 = 35 字节
 ```
 
-`MyFreeRTOS_C8T6\Hardware\OLED.c` 的 `OLED_ShowChinese()` 就是按这个格式取数据。
+工程里 `Hardware\OLED.c` 的 `OLED_ShowChinese()` 就是按这个格式取数据。
 
 Qt 版实现在 `src\fontgen.cpp`，Python 版在 `src\gen_oled_hz.py`。
 **两条独立实现，改任何一边都要同步改另一边。** 目前两者算出的 70 行点阵已逐行比对过，完全一致。
@@ -166,29 +170,33 @@ error:   initializer element is not computable at load time
 （3 字节编码 + 32 字节点阵），写成 `[][32]` 会报 `excess elements in struct initializer`。
 
 **6. 导出路径不要写死，也不要被"另存为"永久改掉。**
-早期版本遇到写不进去会弹"另请选择位置"，用户一旦选到工程根目录，
+早期版本遇到写不进去会弹"另请选择位置"，用户一旦选到别处，
 本次运行后续导出就都写错地方了。现在每次启动都从 exe 所在目录**向上逐级查找**
-`MyFreeRTOS_C8T6/Hardware`。
+工程里的 `Hardware` 目录；找不到就返回空，导出时再弹对话框问。
 
-**7. 这个 exe 进程不能写工程目录（环境限制，不是代码问题）。**
-在用户这台机器上，程序往 `MyFreeRTOS_C8T6\Hardware\` 和**系统临时目录**都写不进去
-（拒绝访问），只有程序自己的目录可以；而同一个账号下的 cmd 写这两个目录都没问题。
-连 `%TEMP%` 都不行，说明是**进程被限制了写入范围**（安全软件对新建未签名程序的沙箱处理），
-不是 NTFS 权限问题。
+**7. 目标目录写不进去时要有降级方案。**
+有些环境（安全软件沙箱、只读安装目录等）不允许程序写工程目录。
+处理办法是**自动降级**：导出失败时改写到程序自己的目录，
+并用弹窗提示你双击 `src\install-cfont.cmd` 把文件搬过去。
+这样至少不会丢结果，也不会默默写到某个你不知道的地方。
 
-处理办法是**自动降级**：导出失败时改写到程序目录，再双击 `src\install-cfont.cmd` 搬运。
+**8. 发布包要带 VC 运行库。**
+`windeployqt` 默认**不拷** `msvcp140.dll` / `vcruntime140.dll`，
+在没装过 VC++ 运行库的电脑上会报"找不到 msvcp140.dll"起不来。
+要么加 `--compiler-runtime`，要么从 VS 的 `VC\Redist\MSVC\...\x64\Microsoft.VC*.CRT`
+目录手动补（那份是允许随程序分发的）。
 
 ## PC 上验证 OLED 驱动（不用真机）
 
-`src\pctest\` 里有个 I2C 从机模拟器，能在电脑上把 `OLED.c` 跑一遍、把 SSD1306 显存
+`src\pctest\` 里有个 I2C 从机模拟器，能在电脑上把驱动源码跑一遍、把 SSD1306 显存
 还原成 128×64 的 ASCII 图。改驱动代码时先在这里验一遍，能省下反复烧录的时间。
 
 ```powershell
 cd oledfonttool\src\pctest
-$env:PATH = "D:\Qt\Tools\mingw1310_64\bin;$env:PATH"   # 编译器要在 PATH 里找到自己的 DLL
+# 把 <工程> 换成你自己的工程目录
 gcc -std=c99 -O1 -Wall -Wextra -I. `
-    -I"..\..\..\MyFreeRTOS_C8T6\Hardware" `
-    test_oled.c "..\..\..\MyFreeRTOS_C8T6\Hardware\OLED.c" -o test_oled.exe
+    -I"<工程>\Hardware" `
+    test_oled.c "<工程>\Hardware\OLED.c" -o test_oled.exe
 .\test_oled.exe
 ```
 

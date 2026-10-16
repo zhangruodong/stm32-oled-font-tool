@@ -10,7 +10,7 @@
 ; ============================================================================
 
 #define MyAppName        "OLED 汉字取模工具"
-#define MyAppVersion     "1.1"
+#define MyAppVersion     "1.2"
 #define MyAppPublisher   "zhangruodong"
 #define MyAppURL         "https://github.com/zhangruodong/stm32-oled-font-tool"
 #define MyAppExeName     "oledfonttool.exe"

@@ -83,26 +83,41 @@ static QString findSrcDir()
  *   这种失败没有任何报错，最难查。所以这里主动检查并提醒。
  */
 
-/* 找工程的根目录（即 MyFreeRTOS_C8T6 的上一级）。
- * 工具在 <工程>\oledfonttool\build\ 下，而字库导出目标是
- * <工程>\MyFreeRTOS_C8T6\Hardware\，所以从字库路径反推最可靠。 */
+/* 找工程的根目录（即 MyFreeRTOS_C8T6 本身）。
+ *
+ * 字库的目标路径是 <工程根>\Hardware\OLED_CFont.h，
+ * 所以从 Hardware 往上【一级】就是工程根。
+ *
+ * 这里曾经写错过两次，都是"层数算错"：
+ *   1) 从 Hardware 往上跳两级 → 跳到了工作区，User\ / Hardware\ 全部找不到，
+ *      检查静默失效（界面上只显示"没找到"）
+ *   2) 兜底分支找到"包含 MyFreeRTOS_C8T6 的那一层"后返回了那一层本身，
+ *      同样少拼了一个目录名
+ * 判断依据统一成"这一层底下有没有 User 子目录"，比数层数可靠。 */
 static QString findProjectRoot(const QString &headerPath)
 {
 	if (!headerPath.isEmpty())
 	{
 		QDir d(QFileInfo(headerPath).absolutePath());      // ...\MyFreeRTOS_C8T6\Hardware
-		if (d.cdUp() && d.cdUp())                          // -> ...\<工程根>
+		if (d.cdUp())                                      // -> ...\MyFreeRTOS_C8T6
 		{
-			return d.absolutePath();
+			if (QDir(d.absoluteFilePath(QStringLiteral("User"))).exists())
+			{
+				return d.absolutePath();
+			}
 		}
 	}
-	/* 退一步：从 exe 往上找 MyFreeRTOS_C8T6 的上一级 */
+
+	/* 兜底：从 exe 往上找，哪一层下面的 MyFreeRTOS_C8T6 里带 User 子目录。
+	 * 注意要再拼上目录名，不能直接返回"包含它的那一层"。 */
 	QDir dir(QCoreApplication::applicationDirPath());
 	for (int up = 0; up <= 5; ++up)
 	{
-		if (QDir(dir.absoluteFilePath(QStringLiteral("MyFreeRTOS_C8T6"))).exists())
+		const QString candidate = dir.absoluteFilePath(QStringLiteral("MyFreeRTOS_C8T6"));
+		if (QDir(candidate).exists() &&
+		    QDir(QDir(candidate).absoluteFilePath(QStringLiteral("User"))).exists())
 		{
-			return dir.absolutePath();
+			return candidate;
 		}
 		if (!dir.cdUp())
 		{
@@ -263,6 +278,7 @@ private:
 	void updateStatus();
 	void checkFontExists();
 	void checkSourceEncoding(bool popupOnProblem);
+	void writeEncodingLog(const QStringList &lines) const;
 	QString defaultHeaderPath() const;
 
 	FontGen m_gen;
@@ -587,9 +603,22 @@ void MainWindow::checkFontExists()
 void MainWindow::checkSourceEncoding(bool popupOnProblem)
 {
 	const QString root = findProjectRoot(m_headerPath);
+
+	/* 把检查过程写进日志文件。
+	 * 这类"静默失效"的问题光看界面看不出来（根目录找错了也只是显示"没找到"），
+	 * 落盘之后可以直接读文件排查，不用来回截图。 */
+	QStringList log;
+	log << QStringLiteral("=== 源码编码检查 ===");
+	log << QStringLiteral("时间: %1").arg(QDateTime::currentDateTime().toString(Qt::ISODate));
+	log << QStringLiteral("程序目录: %1").arg(QCoreApplication::applicationDirPath());
+	log << QStringLiteral("字库路径: %1").arg(m_headerPath.isEmpty() ? QStringLiteral("(空)") : m_headerPath);
+	log << QStringLiteral("推算的工程根: %1").arg(root.isEmpty() ? QStringLiteral("(空)") : root);
+
 	if (root.isEmpty())
 	{
 		m_encStatus->setText(QStringLiteral("源码编码：未找到工程目录，跳过检查"));
+		log << QStringLiteral("结果: 未找到工程目录");
+		writeEncodingLog(log);
 		return;
 	}
 
@@ -605,6 +634,7 @@ void MainWindow::checkSourceEncoding(bool popupOnProblem)
 	for (const QString &sub : scanDirs)
 	{
 		QDir d(rootDir.absoluteFilePath(sub));
+		log << QStringLiteral("[%1] 存在=%2").arg(sub, d.exists() ? QStringLiteral("是") : QStringLiteral("否"));
 		if (!d.exists())
 		{
 			continue;
@@ -612,6 +642,7 @@ void MainWindow::checkSourceEncoding(bool popupOnProblem)
 		const QStringList names = d.entryList(QStringList() << QStringLiteral("*.c")
 		                                                  << QStringLiteral("*.h"),
 		                                      QDir::Files);
+		log << QStringLiteral("    文件 %1 个: %2").arg(names.size()).arg(names.join(QStringLiteral(" ")));
 		for (const QString &name : names)
 		{
 			const QString path = d.absoluteFilePath(name);
@@ -619,6 +650,7 @@ void MainWindow::checkSourceEncoding(bool popupOnProblem)
 			const QString enc = detectSourceEncoding(path, &text);
 			if (enc.isEmpty())
 			{
+				log << QStringLiteral("    %1: 打不开").arg(name);
 				continue;
 			}
 
@@ -639,6 +671,9 @@ void MainWindow::checkSourceEncoding(bool popupOnProblem)
 					if (sample.isEmpty()) sample = lit;
 				}
 			}
+			log << QStringLiteral("    %1: 编码=%2 字面量=%3 含中文=%4")
+			       .arg(name, enc).arg(literals.size())
+			       .arg(hasChineseLiteral ? QStringLiteral("是") : QStringLiteral("否"));
 			if (!hasChineseLiteral)
 			{
 				continue;
@@ -655,7 +690,11 @@ void MainWindow::checkSourceEncoding(bool popupOnProblem)
 
 	if (checked.isEmpty())
 	{
-		m_encStatus->setText(QStringLiteral("源码编码：工程里没找到含中文的字符串字面量"));
+		/* 把扫描的目录写出来，方便判断"是真的没有"还是"根目录找错了" */
+		m_encStatus->setText(QStringLiteral("源码编码：%1 下没找到含中文的字符串字面量")
+		                     .arg(QDir::toNativeSeparators(root)));
+		log << QStringLiteral("结果: 没有含中文字面量的文件");
+		writeEncodingLog(log);
 		return;
 	}
 
@@ -663,6 +702,8 @@ void MainWindow::checkSourceEncoding(bool popupOnProblem)
 	{
 		m_encStatus->setText(QStringLiteral("源码编码：✓ 正常（%1）")
 		                     .arg(details.join(QStringLiteral("、"))));
+		log << QStringLiteral("结果: 正常");
+		writeEncodingLog(log);
 		return;
 	}
 
@@ -679,10 +720,32 @@ void MainWindow::checkSourceEncoding(bool popupOnProblem)
 	m_encStatus->setText(QStringLiteral("⚠ 源码编码不匹配：%1")
 	                     .arg(mismatch.join(QStringLiteral("、"))));
 
+	log << QStringLiteral("结果: 不匹配 -> %1").arg(mismatch.join(QStringLiteral("; ")));
+	writeEncodingLog(log);
+
 	if (popupOnProblem)
 	{
 		QMessageBox::warning(this, QStringLiteral("源码编码和字库不一致"), msg);
 	}
+}
+
+/* 把编码检查的过程写到程序目录下的 encoding-check.txt */
+void MainWindow::writeEncodingLog(const QStringList &lines) const
+{
+	const QString path = QDir(QCoreApplication::applicationDirPath())
+		.absoluteFilePath(QStringLiteral("encoding-check.txt"));
+	QFile f(path);
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+	{
+		return;
+	}
+	QTextStream ts(&f);
+	ts.setEncoding(QStringConverter::Utf8);
+	for (const QString &l : lines)
+	{
+		ts << l << "\n";
+	}
+	f.close();
 }
 
 void MainWindow::updateStatus()

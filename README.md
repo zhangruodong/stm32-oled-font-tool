@@ -14,10 +14,14 @@
 
 ## 快速开始（不想编译的话）
 
-到 [Releases](https://github.com/zhangruodong/stm32-oled-font-tool/releases/latest) 下载
-`oledfonttool-1.0-portable.zip`，解压后双击 `oledfonttool.exe`。
+到 [Releases](https://github.com/zhangruodong/stm32-oled-font-tool/releases/latest) 下载，两种版本内容相同，任选一个：
 
-**不需要安装 Qt、Visual Studio、或任何运行库** —— 都在包里了。
+| 版本 | 用法 | 特点 |
+|---|---|---|
+| `oledfonttool-1.0-setup.exe` | 双击按向导安装 | 可自选安装路径，创建开始菜单/桌面快捷方式，可在控制面板卸载 |
+| `oledfonttool-1.0-portable.zip` | 解压后双击 `oledfonttool.exe` | 免安装（绿色版），不用了就删文件夹 |
+
+**两种都不需要安装 Qt、Visual Studio、或任何运行库** —— 都在包里了。
 
 用法：
 
@@ -92,6 +96,9 @@ oledfonttool\
     pctest\              PC 上验证 OLED 驱动，不用真机
       stm32f10x.h          桩头文件（别加进 Keil 工程）
       test_oled.c          I2C 从机模拟器，还原显存成 ASCII 图
+installer\              制作 Windows 安装包（Inno Setup）
+  oledfonttool.iss        安装脚本
+  app.ico                 程序图标
 ```
 
 **两种用法产出的格式完全一致**，随便挑：
@@ -118,6 +125,21 @@ oledfonttool\
 build\oledfonttool.exe      开发用
 package\                    分发用（已含全部运行库，可整个拷走）
 ```
+
+### 制作分发包
+
+**免安装 zip**：把 `package\` 压缩即可。
+
+**安装包（可选）**：装了 [Inno Setup](https://jrsoftware.org/isinfo.php) 之后
+
+```
+# 1. 先把 package\ 放到仓库根目录（和 installer\ 同级）
+# 2. 编译
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\oledfonttool.iss
+# 产出 installer\Output\oledfonttool-<版本>-setup.exe
+```
+
+安装脚本支持自选安装路径、开始菜单与桌面快捷方式、控制面板卸载。
 
 ### 命令行版
 

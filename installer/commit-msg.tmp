@@ -1,0 +1,7 @@
+docs: 增加 Windows 安装包（Inno Setup）
+
+- installer/oledfonttool.iss  安装脚本：可自选安装路径、开始菜单/桌面快捷方式、
+  控制面板卸载、自动运行程序
+- installer/app.ico           程序图标（用本工具的 16x16 点阵渲染，含 7 种尺寸）
+- README 补充两种分发版的区别，以及制作分发包的步骤
+- .gitignore 排除 installer 的构建产物与辅助脚本

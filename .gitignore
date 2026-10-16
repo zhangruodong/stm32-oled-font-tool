@@ -12,6 +12,10 @@
 # ---- 构建产物 ----------------------------------------------------------
 build/
 package/
+installer/Output/
+installer/release-notes.md
+installer/upload-setup.ps1
+installer/make-setup.bat
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake

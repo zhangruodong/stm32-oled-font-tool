@@ -72,8 +72,133 @@ static QString findSrcDir()
 	return QString();
 }
 
-/* 判断 s 的第 i 位开始是不是 "0x"/"0X" + 两个十六进制数字（也就是一个字节的字面量） */
-static bool isHexPair(const QString &s, int i)
+/*
+ * ---- 源码编码检查 ----
+ *
+ * 为什么需要：
+ *   Keil(ARMCC 5.x) 按系统 ANSI 代码页读源文件，而它【不做任何转码】——
+ *   源文件里是什么字节，字符串字面量里就是什么字节。
+ *   而字库里的键是固定的 UTF-8 三字节。两边编码不一致时：
+ *       编译通过、程序能跑、屏幕上什么都没有
+ *   这种失败没有任何报错，最难查。所以这里主动检查并提醒。
+ */
+
+/* 找工程的根目录（即 MyFreeRTOS_C8T6 的上一级）。
+ * 工具在 <工程>\oledfonttool\build\ 下，而字库导出目标是
+ * <工程>\MyFreeRTOS_C8T6\Hardware\，所以从字库路径反推最可靠。 */
+static QString findProjectRoot(const QString &headerPath)
+{
+	if (!headerPath.isEmpty())
+	{
+		QDir d(QFileInfo(headerPath).absolutePath());      // ...\MyFreeRTOS_C8T6\Hardware
+		if (d.cdUp() && d.cdUp())                          // -> ...\<工程根>
+		{
+			return d.absolutePath();
+		}
+	}
+	/* 退一步：从 exe 往上找 MyFreeRTOS_C8T6 的上一级 */
+	QDir dir(QCoreApplication::applicationDirPath());
+	for (int up = 0; up <= 5; ++up)
+	{
+		if (QDir(dir.absoluteFilePath(QStringLiteral("MyFreeRTOS_C8T6"))).exists())
+		{
+			return dir.absolutePath();
+		}
+		if (!dir.cdUp())
+		{
+			break;
+		}
+	}
+	return QString();
+}
+
+/* 检测一个源文件的编码。
+ * 判据：UTF-8 的多字节序列有严格规则，GBK 的中文字节几乎不可能碰巧是合法 UTF-8，
+ *       所以"能否整体按 UTF-8 解码"就是很可靠的判据。 */
+static QString detectSourceEncoding(const QString &path, QString *outText)
+{
+	QFile f(path);
+	if (!f.open(QIODevice::ReadOnly))
+	{
+		return QString();
+	}
+	const QByteArray raw = f.readAll();
+	f.close();
+
+	QString text;
+	QString enc;
+
+	if (raw.startsWith("\xEF\xBB\xBF"))
+	{
+		enc = QStringLiteral("UTF-8 BOM");
+		text = QString::fromUtf8(raw.mid(3));
+	}
+	else
+	{
+		QStringDecoder dec(QStringDecoder::Utf8);
+		text = dec(raw);
+		if (dec.hasError())
+		{
+			enc = QStringLiteral("GBK/ANSI");
+			/* 用系统代码页解码，好让用户看清乱码的样子 */
+			text = QString::fromLocal8Bit(raw);
+		}
+		else
+		{
+			enc = QStringLiteral("UTF-8");
+		}
+	}
+
+	if (outText)
+	{
+		*outText = text;
+	}
+	return enc;
+}
+
+/* 从 C 源码里抽出双引号字符串字面量的内容（跳过注释）。
+ * 只做够用的解析：识别行注释与块注释、处理反斜杠转义。 */
+static QStringList collectStringLiterals(const QString &src)
+{
+	QStringList out;
+	QString cur;
+	bool inStr = false;
+	bool inLineComment = false;
+	bool inBlockComment = false;
+	bool escape = false;
+
+	for (int i = 0; i < src.size(); ++i)
+	{
+		const QChar c = src.at(i);
+		const QChar n = (i + 1 < src.size()) ? src.at(i + 1) : QChar();
+
+		if (inLineComment)
+		{
+			if (c == QLatin1Char('\n')) inLineComment = false;
+			continue;
+		}
+		if (inBlockComment)
+		{
+			if (c == QLatin1Char('*') && n == QLatin1Char('/')) { inBlockComment = false; ++i; }
+			continue;
+		}
+		if (inStr)
+		{
+			if (escape)          { cur.append(c); escape = false; }
+			else if (c == QLatin1Char('\\')) { escape = true; }
+			else if (c == QLatin1Char('"'))  { inStr = false; out << cur; cur.clear(); }
+			else                 { cur.append(c); }
+			continue;
+		}
+
+		if (c == QLatin1Char('/') && n == QLatin1Char('/')) { inLineComment = true; ++i; continue; }
+		if (c == QLatin1Char('/') && n == QLatin1Char('*')) { inBlockComment = true; ++i; continue; }
+		if (c == QLatin1Char('"')) { inStr = true; cur.clear(); continue; }
+	}
+	return out;
+}
+
+/* 判断 s 的第 i 位开始是不是 "0x"/"0X" + 两个十六进制数字（也就是一个字节的字面量） */static bool isHexPair(const QString &s, int i)
 {
 	if (i + 3 >= s.size())            return false;
 	if (s.at(i) != QLatin1Char('0'))  return false;
@@ -129,12 +254,15 @@ public:
 
 private:
 	void refreshPreview();
-	void exportHeader();
+	/* askForPath = false 表示调用方已经让用户选过保存位置了，
+	 * 不要再弹一次对话框（「另存为…」就是这么调用的）。 */
+	void exportHeader(bool askForPath = true);
 	void importHeader();
 
 	void buildUi();
 	void updateStatus();
 	void checkFontExists();
+	void checkSourceEncoding(bool popupOnProblem);
 	QString defaultHeaderPath() const;
 
 	FontGen m_gen;
@@ -149,6 +277,7 @@ private:
 	QLabel *m_countLabel;
 	QLabel *m_hint;
 	QLabel *m_pathLabel;
+	QLabel *m_encStatus;            /* 源码编码检查结果 */
 	QCheckBox *m_askEveryTime;      /* 勾上则每次导出都弹对话框选位置 */
 	QString m_headerPath;
 };
@@ -288,6 +417,15 @@ void MainWindow::buildUi()
 	outLayout->addLayout(btnRow);
 
 	sideLayout->addWidget(boxOut);
+
+	/* 源码编码检查结果。
+	 * 单独放一个标签，因为它关系到"字库能不能被查到"，比普通状态重要。 */
+	m_encStatus = new QLabel(side);
+	m_encStatus->setObjectName(QStringLiteral("Hint"));
+	m_encStatus->setWordWrap(true);
+	m_encStatus->setMinimumWidth(1);
+	sideLayout->addWidget(m_encStatus);
+
 	sideLayout->addStretch(1);
 
 	m_status = new QLabel(side);
@@ -330,6 +468,9 @@ void MainWindow::buildUi()
 		m_pathLabel->setText(QStringLiteral("默认导出到：\n%1").arg(m_headerPath));
 	}
 
+	/* 启动时做一次源码编码检查（不弹窗，只写进状态标签） */
+	checkSourceEncoding(false);
+
 	connect(m_text, &QPlainTextEdit::textChanged, this, &MainWindow::refreshPreview);
 	connect(m_fontBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
 	        this, &MainWindow::refreshPreview);
@@ -347,7 +488,8 @@ void MainWindow::buildUi()
 		if (!path.isEmpty())
 		{
 			m_headerPath = path;
-			exportHeader();
+			/* 传 false：路径刚在这里选过，exportHeader 不要再弹对话框 */
+			exportHeader(false);
 		}
 	});
 }
@@ -431,6 +573,118 @@ void MainWindow::checkFontExists()
 	}
 }
 
+/*
+ * 检查工程源码的编码，和字库的键（固定 UTF-8）是否匹配。
+ *
+ * 背景：Keil 按系统 ANSI 代码页读源文件且【不转码】，源文件里是什么字节，
+ *       字符串字面量里就是什么字节。字库的键是 UTF-8 三字节，
+ *       所以源码若是 GBK，两边对不上 —— 编译能过、程序能跑、屏幕全空。
+ *       这种失败没有任何报错，主动检查一次能省掉大量排查时间。
+ *
+ * popupOnProblem = true 时，发现问题会弹窗（导出前调用）；
+ *                = false 时只更新状态标签（启动时调用，不打扰）。
+ */
+void MainWindow::checkSourceEncoding(bool popupOnProblem)
+{
+	const QString root = findProjectRoot(m_headerPath);
+	if (root.isEmpty())
+	{
+		m_encStatus->setText(QStringLiteral("源码编码：未找到工程目录，跳过检查"));
+		return;
+	}
+
+	QStringList checked;        /* 有中文字符串的文件 */
+	QStringList mismatch;       /* 编码不匹配的文件 */
+	QStringList details;
+
+	const QDir rootDir(root);
+	const QStringList scanDirs = {
+		QStringLiteral("User"), QStringLiteral("Hardware"), QStringLiteral("System")
+	};
+
+	for (const QString &sub : scanDirs)
+	{
+		QDir d(rootDir.absoluteFilePath(sub));
+		if (!d.exists())
+		{
+			continue;
+		}
+		const QStringList names = d.entryList(QStringList() << QStringLiteral("*.c")
+		                                                  << QStringLiteral("*.h"),
+		                                      QDir::Files);
+		for (const QString &name : names)
+		{
+			const QString path = d.absoluteFilePath(name);
+			QString text;
+			const QString enc = detectSourceEncoding(path, &text);
+			if (enc.isEmpty())
+			{
+				continue;
+			}
+
+			/* 只看有没有"含中文的字符串字面量" —— 中文注释不影响查表 */
+			bool hasChineseLiteral = false;
+			QString sample;
+			const QStringList literals = collectStringLiterals(text);
+			for (const QString &lit : literals)
+			{
+				bool hasNonAscii = false;
+				for (const QChar &c : lit)
+				{
+					if (c.unicode() > 127) { hasNonAscii = true; break; }
+				}
+				if (hasNonAscii)
+				{
+					hasChineseLiteral = true;
+					if (sample.isEmpty()) sample = lit;
+				}
+			}
+			if (!hasChineseLiteral)
+			{
+				continue;
+			}
+
+			checked << name;
+			details << QStringLiteral("%1  %2").arg(name, enc);
+			if (!enc.startsWith(QLatin1String("UTF-8")))
+			{
+				mismatch << QStringLiteral("%1（%2）示例：\"%3\"").arg(name, enc, sample);
+			}
+		}
+	}
+
+	if (checked.isEmpty())
+	{
+		m_encStatus->setText(QStringLiteral("源码编码：工程里没找到含中文的字符串字面量"));
+		return;
+	}
+
+	if (mismatch.isEmpty())
+	{
+		m_encStatus->setText(QStringLiteral("源码编码：✓ 正常（%1）")
+		                     .arg(details.join(QStringLiteral("、"))));
+		return;
+	}
+
+	/* 有不匹配的 */
+	const QString msg = QStringLiteral("源码编码和字库不一致：\n\n%1\n\n"
+		"字库的键固定是 UTF-8 三字节，而这些源文件不是 UTF-8。\n"
+		"Keil 读源文件时不做转码，字符串会按源文件的编码进入程序，\n"
+		"和字库的键对不上 —— 编译能通过、程序也能跑，但屏幕上不会显示汉字。\n\n"
+		"解决办法（任选一个）：\n"
+		"  1. 把这些源文件另存成 UTF-8\n"
+		"  2. 并且在 Keil 里 Edit → Configuration → Editor → Encoding 选 UTF-8")
+		.arg(mismatch.join(QStringLiteral("\n")));
+
+	m_encStatus->setText(QStringLiteral("⚠ 源码编码不匹配：%1")
+	                     .arg(mismatch.join(QStringLiteral("、"))));
+
+	if (popupOnProblem)
+	{
+		QMessageBox::warning(this, QStringLiteral("源码编码和字库不一致"), msg);
+	}
+}
+
 void MainWindow::updateStatus()
 {
 	const int n = m_preview->glyphCount();
@@ -447,7 +701,7 @@ void MainWindow::updateStatus()
 	                  .arg(QString::number(bytes / 1024.0, 'f', 1)));
 }
 
-void MainWindow::exportHeader()
+void MainWindow::exportHeader(bool askForPath)
 {
 	const QString srcText = m_text->toPlainText();
 	QString err;
@@ -558,8 +812,12 @@ void MainWindow::exportHeader()
 	/* 什么时候先问用户保存位置：
 	 *   1. 用户勾了"每次导出都询问"
 	 *   2. 没自动找到工程目录（猜不准，绝不能默默写到别处）
-	 * 否则直接写到自动推断出来的路径，保持一键导出的便利。 */
-	const bool needAsk = m_askEveryTime->isChecked() || m_headerPath.isEmpty();
+	 * 否则直接写到自动推断出来的路径，保持一键导出的便利。
+	 *
+	 * 例外：调用方（「另存为…」）刚让用户选完路径，这时 askForPath 为 false，
+	 * 绝不能再弹一次 —— 否则用户要点两次"保存/替换"，第二次才真正写文件。 */
+	const bool needAsk = askForPath &&
+	                     (m_askEveryTime->isChecked() || m_headerPath.isEmpty());
 	if (needAsk)
 	{
 		QString start = m_headerPath;
@@ -796,6 +1054,11 @@ void MainWindow::exportHeader()
 	                         .arg(m_headerPath)
 	                         .arg(m_preview->glyphCount())
 	                         .arg(FontGen::flashBytes(m_preview->glyphCount(), false)));
+
+	/* 导出成功后顺便检查一下工程源码的编码。
+	 * 编码不一致时字库能写进去、Keil 也能编译，但屏幕上不会显示汉字，
+	 * 这里提醒一次，免得用户对着一片空白找原因。 */
+	checkSourceEncoding(true);
 }
 
 void MainWindow::importHeader()

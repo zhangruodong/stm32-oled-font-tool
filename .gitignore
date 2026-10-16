@@ -13,7 +13,8 @@
 build/
 package/
 installer/Output/
-installer/release-notes.md
+installer/release-notes*.md
+installer/make-*.ps1
 installer/upload-setup.ps1
 installer/set-desc.ps1
 installer/make-setup.bat

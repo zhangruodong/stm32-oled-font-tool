@@ -15,7 +15,10 @@ package/
 installer/Output/
 installer/release-notes.md
 installer/upload-setup.ps1
+installer/set-desc.ps1
 installer/make-setup.bat
+installer/commit-msg.tmp
+*.tmp
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake

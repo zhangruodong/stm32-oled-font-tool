@@ -79,13 +79,12 @@ OLED_ShowChineseString(3, 1, "温度:25");       // 中英文自动混排
 
 ```
 oledfonttool\
-  BUILD.lnk              双击构建（Windows，需自备 MSVC + Qt）
   build\                 构建产物
   scripts\
-    build.cmd            可移植的构建入口（推荐，不依赖 .lnk）
+    build.cmd            构建入口，双击即可（推荐）
     build.ps1            真正的构建逻辑
     add_bom.py           给脚本补 UTF-8 BOM
-    make-shortcut.ps1    重建 BUILD.lnk
+    make-shortcut.ps1    重建 BUILD.lnk（本机专用，不提交进仓库）
   src\
     main.cpp             界面、布局、导出            ┐
     fontgen.cpp/.h       渲染 + 编码（核心）          │ Qt 图形界面版
@@ -95,10 +94,10 @@ oledfonttool\
     gen_oled_hz.py       渲染/编码底层                │
     verify_cfont.py      校验字库格式与一致性          │ Python 命令行版
     dump_font.py         把字节还原成点阵图            ┘
-    install-cfont.cmd    把字库搬进 Keil 工程
+    install-cfont.cmd    把字库搬进工程
     OLED_CFont.h         命令行版的产物
     pctest\              PC 上验证 OLED 驱动，不用真机
-      stm32f10x.h          桩头文件（别加进 Keil 工程）
+      stm32f10x.h          桩头文件（别加进工程）
       test_oled.c          I2C 从机模拟器，还原显存成 ASCII 图
 installer\
   oledfonttool.iss        制作 Windows 安装包的脚本（Inno Setup）

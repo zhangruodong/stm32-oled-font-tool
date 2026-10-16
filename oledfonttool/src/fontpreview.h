@@ -1,0 +1,42 @@
+#ifndef FONTPREVIEW_H
+#define FONTPREVIEW_H
+
+#include <QWidget>
+#include <QString>
+#include <QVector>
+#include <QChar>
+#include "fontgen.h"
+
+/*
+ * 点阵预览：把每个字的 16x16 点阵画成缩略图网格
+ * 这就是"所见即所得"的那块——调阈值、换字体，这里立刻重画
+ */
+class FontPreview : public QWidget
+{
+public:
+	explicit FontPreview(QWidget *parent = nullptr);
+
+	void setGenerator(FontGen *gen);
+	void setText(const QString &text);
+
+	QSize sizeHint() const override;
+	QSize minimumSizeHint() const override;
+	bool hasHeightForWidth() const override { return true; }
+	int heightForWidth(int w) const override;
+
+	int glyphCount() const { return m_chars.size(); }
+
+protected:
+	void paintEvent(QPaintEvent *event) override;
+	void resizeEvent(QResizeEvent *event) override;
+
+private:
+	int columns() const;
+	int cellSize() const;
+
+	FontGen *m_gen;
+	QVector<QChar> m_chars;
+	int m_gap;
+};
+
+#endif /* FONTPREVIEW_H */

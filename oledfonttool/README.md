@@ -3,9 +3,9 @@
 给 STM32 + SSD1306 工程配套的汉字取模工具。**输入文字 → 实时看点阵 → 导出
 `OLED_CFont.h`**，一个字一个字地手攒字模这件事就不必再做了。
 
-有两种用法，产出格式完全一致，随便挑：
+有两种用法，产出格式完全一致，按需要选：
 
-- **图形界面版**（Qt，双击 `BUILD.lnk` 构建）——适合加几个字、想边看边调字形
+- **图形界面版**（Qt）——适合加几个字、想边看边调字形
 - **命令行版**（`src\build_cfont.py`）——适合一次加几十个字，或写进脚本
 
 ## 它解决什么
@@ -25,11 +25,11 @@
 ```
 oledfonttool\
   README.md              <- 本文件
-  BUILD.lnk              <- 双击这个构建（不依赖文件关联）
+  BUILD.lnk              <- 双击构建的快捷方式（本机专用，不提交进仓库）
   build\                 <- 构建产物：oledfonttool.exe + Qt 运行库
   scripts\               <- 构建用的脚本（一般不用碰）
+    build.cmd              构建入口，双击即可（推荐）
     build.ps1              真正的构建逻辑
-    build.cmd              可移植的构建入口（推荐）
     make-shortcut.ps1      重建 BUILD.lnk
     add_bom.py             给文件补 UTF-8 BOM
   src\                   <- 所有源码
@@ -50,23 +50,21 @@ oledfonttool\
 
 ## 构建图形界面版
 
-需要：Visual Studio 2022（MSVC）、Qt 6.11.2（msvc2022_64）、CMake、Ninja。
-你机器上都齐了，直接双击：
+需要：Visual Studio 2022（含 C++ 工具）、Qt 6（msvc 版）、CMake、Ninja。
 
 ```
-BUILD.lnk
+双击 scripts\build.cmd
 ```
+
+脚本会自动探测这些工具装在哪，并把结果打印在开头。探测不到时才需要改
+`scripts\build.ps1` 开头的 `$Fallback*` 变量。
 
 产出 `build\oledfonttool.exe`，双击运行。Qt 运行库会自动拷到旁边。
 
-`BUILD.lnk` 把"启动 powershell.exe + 参数"写死在快捷方式里，不依赖文件关联。
 真正的构建逻辑在 `scripts\build.ps1`：失败时会停在窗口里，打印日志最后 40 行，
 完整日志写到 `build-log.txt`。
 
-也可以在 Qt Creator 里打开 `src\CMakeLists.txt`，选 **Desktop Qt 6.11.2 MSVC2022 64bit**
-这个 kit，然后构建运行。
-
-> 路径和我假设的不一样的话，改 `scripts\build.ps1` 开头那四个变量。
+也可以在 Qt Creator 里打开 `src\CMakeLists.txt`，选 MSVC 版的 Qt 6 kit，然后构建运行。
 
 ## 用
 
@@ -81,8 +79,8 @@ BUILD.lnk
 
 「导入已有字库」会把现成的 `OLED_CFont.h` 读回来**并合并**（不是替换），可以在它基础上加字。
 
-**如果弹出"导出成功（需要手动搬运）"**：说明程序没有权限直接写工程目录
-（原因见"踩过的坑"第 6 条）。按提示双击 `src\install-cfont.cmd` 即可，它会自动备份旧文件。
+**如果弹出"导出成功（需要手动搬运）"**：说明程序没有权限直接写工程目录。
+按提示双击 `src\install-cfont.cmd` 即可，它会自动备份旧文件。
 
 ### 命令行版
 
@@ -100,23 +98,11 @@ CHARS = (
 
 ```powershell
 python oledfonttool\src\build_cfont.py      # 生成字库，并打印每个字的点阵供核对
-python oledfonttool\src\verify_cfont.py     # 校验是否逐字节一致
 ```
 
 产出 `src\OLED_CFont.h`，再双击 `src\install-cfont.cmd` 搬运。
 
-### 验证手里的字节
-
-手上有一段来源不明的 32 字节字模，喂给它就能看到点阵图：
-
-```powershell
-python oledfonttool\src\dump_font.py 0x00,0x40,0xFE,...
-```
-
-它会**同时按"列行式"和"逐行式"两种解释**画出图，并报孤立点数——散点少的那个才是对的。
-不用编译烧录就能判断一段字节是不是本工具要求的格式。
-
-## 编码格式（唯一权威定义）
+## 编码格式
 
 ```
 阴码 / 列行式 / 逆向(低位在前) / C51格式
@@ -134,57 +120,6 @@ Qt 版实现在 `src\fontgen.cpp`，Python 版在 `src\gen_oled_hz.py`。
 `OLED_CFont.h` 必须写成 **UTF-8**，且 Keil 的
 `Edit → Configuration → Encoding` 要选 **UTF-8**。工具已经按 UTF-8 写出，
 但如果你用别的编辑器打开再保存，可能被转成 GBK，字库就会查不到。
-
-## 踩过的坑（改这个工具前先看）
-
-**1. `.ps1` 必须带 UTF-8 BOM。**
-Windows PowerShell 5.1 读没有 BOM 的 UTF-8 文件时按系统 ANSI 代码页（中文系统是 GBK）解释，
-中文注释会变成乱码并凑出非法语法，脚本连解析都过不去，表现就是"窗口一闪而过"。
-`build.ps1` 已内置自检自愈（启动时发现没 BOM 就自己补上再重启），
-但编辑工具保存时经常去掉 BOM，**改完用 `scripts\add_bom.py` 补一下**。
-
-**2. `.cmd` 必须纯 ASCII，且不能写中文路径字面量。**
-cmd.exe 按 ANSI（GBK）解析 `.cmd`，中文字节会被解错导致脚本直接崩。
-现有脚本一律用 `%~dp0` 推导路径，从根上避开。
-
-**3. 样式表里不能写全局 `color`。**
-Windows 深色主题下 `QMessageBox` 用深色背景，而全局深色文字会让弹窗**完全看不见内容**
-（看起来"只有标题没有正文"）。现在统一用 Fusion 风格 + 浅色调色板，并给 `QMessageBox`
-显式配色。踩这个坑时，我误以为是自检逻辑有 bug，白查了好几轮。
-
-**4. 十六进制不要对整串 `toUpper()`。**
-`QStringLiteral("0x%1").arg(...).toUpper()` 会把前缀的 `x` 变成 `X`，
-生成 `0XE4` 这种数据。C++ 能编译，但与字库约定的大小写不一致，
-自检若用 `startsWith("0x")` 会误报。现在只把两位数值转大写。
-
-**5. 字库数组不能用 `{"\xE4\xB8\x8A",0x00,...}` 这种写法。**
-字符串字面量是"字符数组"类型，和字节混在同一个初始化列表里时，从第二行开始编译器
-会把字符串当成指针值：
-
-```
-warning: initialization of 'unsigned char' from 'char *'
-error:   initializer element is not computable at load time
-```
-
-所以字库里**全部写十六进制字节**，汉字只放在注释里。另外数组要声明成 `[][35]`
-（3 字节编码 + 32 字节点阵），写成 `[][32]` 会报 `excess elements in struct initializer`。
-
-**6. 导出路径不要写死，也不要被"另存为"永久改掉。**
-早期版本遇到写不进去会弹"另请选择位置"，用户一旦选到别处，
-本次运行后续导出就都写错地方了。现在每次启动都从 exe 所在目录**向上逐级查找**
-工程里的 `Hardware` 目录；找不到就返回空，导出时再弹对话框问。
-
-**7. 目标目录写不进去时要有降级方案。**
-有些环境（安全软件沙箱、只读安装目录等）不允许程序写工程目录。
-处理办法是**自动降级**：导出失败时改写到程序自己的目录，
-并用弹窗提示你双击 `src\install-cfont.cmd` 把文件搬过去。
-这样至少不会丢结果，也不会默默写到某个你不知道的地方。
-
-**8. 发布包要带 VC 运行库。**
-`windeployqt` 默认**不拷** `msvcp140.dll` / `vcruntime140.dll`，
-在没装过 VC++ 运行库的电脑上会报"找不到 msvcp140.dll"起不来。
-要么加 `--compiler-runtime`，要么从 VS 的 `VC\Redist\MSVC\...\x64\Microsoft.VC*.CRT`
-目录手动补（那份是允许随程序分发的）。
 
 ## PC 上验证 OLED 驱动（不用真机）
 

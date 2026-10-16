@@ -22,8 +22,8 @@
 
 | 版本 | 用法 | 特点 |
 |---|---|---|
-| `oledfonttool-1.0-setup.exe` | 双击按向导安装 | 可自选安装路径，创建开始菜单/桌面快捷方式，可在控制面板卸载 |
-| `oledfonttool-1.0-portable.zip` | 解压后双击 `oledfonttool.exe` | 免安装（绿色版），不用了就删文件夹 |
+| `...-setup.exe` | 双击按向导安装 | 可自选安装路径，创建开始菜单/桌面快捷方式，可在控制面板卸载 |
+| `...-portable.zip` | 解压后双击 `oledfonttool.exe` | 免安装（绿色版），不用了就删文件夹 |
 
 **两种都不需要安装 Qt、Visual Studio、或任何运行库** —— 都在包里了。
 
@@ -72,7 +72,7 @@ void OLED_ShowChineseString(uint8_t Line, uint8_t Column, char *String); // 中�
 
 ```c
 OLED_ShowChineseString(1, 1, "嵌入式开发网");   // 汉字占 2 个 ASCII 字符宽
-OLED_ShowChineseString(3, 1, "温度:25℃");      // 中英文自动混排
+OLED_ShowChineseString(3, 1, "温度:25");       // 中英文自动混排
 ```
 
 ## 目录结构
@@ -100,15 +100,10 @@ oledfonttool\
     pctest\              PC 上验证 OLED 驱动，不用真机
       stm32f10x.h          桩头文件（别加进 Keil 工程）
       test_oled.c          I2C 从机模拟器，还原显存成 ASCII 图
-installer\              制作 Windows 安装包（Inno Setup）
-  oledfonttool.iss        安装脚本
+installer\
+  oledfonttool.iss        制作 Windows 安装包的脚本（Inno Setup）
   app.ico                 程序图标
 ```
-
-**两种用法产出的格式完全一致**，随便挑：
-
-- **图形界面版** —— 适合加几个字、想边看边调字形
-- **命令行版** —— 适合一次加几十个字
 
 ## 从源码构建
 
@@ -161,19 +156,7 @@ CHARS = (
 
 ```bash
 python oledfonttool/src/build_cfont.py      # 生成字库，并打印每个字的点阵供核对
-python oledfonttool/src/verify_cfont.py     # 校验格式
 ```
-
-### 验证手里的字节
-
-手上有一段来源不明的 32 字节字模，可以还原成点阵图看到底对不对：
-
-```bash
-python oledfonttool/src/dump_font.py 0x00,0x40,0xFE,...
-```
-
-它会**同时按"列行式"和"逐行式"两种解释**画图，并统计孤立点数 ——
-**散点少的那个才是正确解释**。这样不用编译烧录就能判断一段字节是不是本工具要求的格式。
 
 ## 不用真机验证驱动
 
@@ -187,73 +170,14 @@ gcc -std=c99 -O1 -Wall -I. -I<你的工程>/Hardware \
 ./test_oled.exe
 ```
 
-## 踩过的坑（改这个项目前先看）
+## 改这个项目之前
 
-这些都是实际踩出来的，每条都有明确的报错现象：
-
-**1. 字库数组不能用 `{"\xE4\xB8\x8A",0x00,...}` 这种写法**
-
-字符串字面量是"字符数组"类型，和字节元素混在同一个初始化列表里时，从第二行开始
-编译器会把字符串当成指针值：
-
-```
-warning: initialization of 'unsigned char' from 'char *'
-error:   initializer element is not computable at load time
-```
-
-**所以字库全部写十六进制字节，汉字只放在注释里。**
-
-**2. 数组要声明成 `[][35]`，不是 `[][32]`**
-
-3 字节 UTF-8 编码 + 32 字节点阵 = 35。写成 32 会报 `excess elements in struct initializer`。
-
-**3. 十六进制不要对整串 `toUpper()`**
-
-`QStringLiteral("0x%1").arg(...).toUpper()` 会把前缀的 `x` 也变成 `X`，生成 `0XE4`。
-C++ 能编译（十六进制前缀大小写不敏感），但与约定不一致，自检会误报。
-
-**4. `.ps1` 脚本必须带 UTF-8 BOM**
-
-Windows PowerShell 5.1 读**没有 BOM** 的 UTF-8 文件时按系统 ANSI 代码页（中文系统是 GBK）
-解释，中文注释变成乱码后凑出非法语法，脚本**连解析都过不去**，现象是窗口一闪而过：
-
-```
-Missing type name after '['.
-Missing closing '}' in statement block or type definition.
-```
-
-`build.ps1` 内置了自检自愈（启动时发现没 BOM 就自己补上再重启）。
-
-**5. `.cmd` 必须纯 ASCII，且不能写中文路径字面量**
-
-cmd.exe 按 ANSI（GBK）解析 `.cmd`，中文字节会被解错导致脚本崩。
-现有脚本一律用 `%~dp0` 推导路径，从根上避开。
-
-**6. 样式表里不能写全局 `color`**
-
-Windows 深色主题下 `QMessageBox` 用深色背景，全局深色文字会让弹窗**完全看不见内容**
-（看起来"只有标题没有正文"）。现在统一用 Fusion 风格 + 浅色调色板，并给 `QMessageBox` 显式配色。
-
-**7. 打包发布时别把调试版运行库带进去**
-
-`windeployqt` 会连同 **微软 C 运行库的调试版**（`msvcp140d.dll`、`vcruntime140d.dll` 等）
-一起拷进来，这些是**不允许再分发**的。判断规则不能简单用"以 d 结尾"——
-`qcertonlybackend.dll` 里的 `d` 属于 backend 这个词，是正常发布版。
-
-**8. 发布包要带 VC 运行库**
-
-`windeployqt` 默认**不拷** `msvcp140.dll` / `vcruntime140.dll`。
-不加 `--compiler-runtime` 的话，在没装过 VC++ 运行库的电脑上会报"找不到 msvcp140.dll"起不来。
-
-## 关于字模渲染
-
-Qt 版（`QPainter`）和 Python 版（`Pillow`）是**两套独立实现**，都按 16px 宋体渲染。
-两者的输出已逐行比对过，**完全一致**。改任何一边都要同步改另一边。
+字库格式、脚本编码、界面、打包发布这几个方面都踩过坑，每条都记录了报错现象。
+动手改之前建议看一眼 **[DEVELOPMENT.md](DEVELOPMENT.md)**。
 
 ## 许可
 
 本仓库的工具代码采用 **MIT 协议**（见 [LICENSE](LICENSE)）—— 可以自由使用、修改、分发，包括商用，保留版权声明即可。
 
-**注意**：如果你把本工具配合 STM32 标准外设库一起使用，那部分代码的版权归
-**STMicroelectronics**（见各源文件头部的版权声明）；FreeRTOS 遵循 **MIT** 许可。
-这些第三方组件不在本仓库内，其许可各自独立。
+注意：如果你的 STM32 工程里用了 ST 标准外设库或 FreeRTOS，那部分代码的版权和许可
+归各自作者所有，与本仓库无关。
